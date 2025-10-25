@@ -1,0 +1,164 @@
+<!doctype html>
+<html>
+<head>
+  <title>Live Stress Detection</title>
+  <style>
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      transition: background-color 0.3s;
+    }
+    h1 { margin-bottom: 20px; color: #333; }
+    #video-container {
+      position: relative;
+      display: inline-block;
+      border: 2px solid #333;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 0 10px rgba(0,0,0,0.3);
+    }
+    video { display: block; width: 320px; height: 240px; }
+    #overlay { margin-top: 10px; font-size: 18px; font-weight: bold; }
+    #history {
+      margin-top: 20px;
+      width: 320px;
+      max-height: 150px;
+      overflow-y: auto;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      padding: 10px;
+      font-size: 14px;
+    }
+    .high { color: red; }
+    .medium { color: orange; }
+    .low { color: green; }
+    #chart-container {
+      margin-top: 20px;
+      width: 320px;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      padding: 10px;
+    }
+    #gauge { margin-top: 15px; width: 200px; height: 100px; }
+  </style>
+</head>
+<body>
+  <h1>Live Stress Detection</h1>
+
+  <div id="video-container">
+    <video id="video" autoplay></video>
+  </div>
+
+  <div id="overlay">Waiting...</div>
+  <canvas id="gauge"></canvas>
+
+  <div id="history">
+    <strong>Stress History:</strong>
+    <ul id="history-list"></ul>
+  </div>
+
+  <div id="chart-container">
+    <canvas id="stressChart"></canvas>
+  </div>
+
+  <!-- Chart.js library -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <script>
+    const video = document.getElementById("video");
+    const overlay = document.getElementById("overlay");
+    const historyList = document.getElementById("history-list");
+    const gaugeCanvas = document.getElementById("gauge");
+    const gaugeCtx = gaugeCanvas.getContext("2d");
+
+    // Chart.js setup
+    const ctxChart = document.getElementById('stressChart').getContext('2d');
+    const chartData = { labels: [], datasets: [{ label: 'Stress Score', data: [], backgroundColor: 'rgba(75,192,192,0.5)', borderColor: 'rgba(75,192,192,1)', borderWidth: 1 }] };
+    const stressChart = new Chart(ctxChart, { type: 'bar', data: chartData, options: { scales: { y: { beginAtZero: true, max: 5 } } } });
+
+    // Webcam access
+    navigator.mediaDevices.getUserMedia({ video: true }).then(stream => video.srcObject = stream).catch(err => alert("Cannot access webcam: " + err));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 240;   // smaller resolution
+    canvas.height = 180;
+    const ctx = canvas.getContext("2d");
+
+    let isSending = false; // prevent overlapping requests
+
+    function drawGauge(score) {
+      gaugeCtx.clearRect(0, 0, gaugeCanvas.width, gaugeCanvas.height);
+      const start = Math.PI;
+      const end = 2 * Math.PI;
+      const angle = start + (score / 5) * Math.PI;
+      gaugeCtx.beginPath();
+      gaugeCtx.arc(100, 100, 80, start, end);
+      gaugeCtx.lineWidth = 20;
+      gaugeCtx.strokeStyle = '#ddd';
+      gaugeCtx.stroke();
+      gaugeCtx.beginPath();
+      gaugeCtx.arc(100, 100, 80, start, angle);
+      gaugeCtx.strokeStyle = score > 3 ? 'red' : score > 1 ? 'orange' : 'green';
+      gaugeCtx.stroke();
+      gaugeCtx.font = '20px Arial';
+      gaugeCtx.fillStyle = '#333';
+      gaugeCtx.textAlign = 'center';
+      gaugeCtx.fillText(score.toFixed(1), 100, 105);
+    }
+
+    async function sendFrame() {
+      if(isSending) return;
+      isSending = true;
+      try {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.6); // lower quality
+        const base64 = dataUrl.split(",")[1];
+
+        const response = await fetch("/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: base64 })
+        });
+
+        const result = await response.json();
+        if(!result.error) {
+          const { Emotion, StressLevel, StressScore } = result;
+
+          let colorClass = "low", bgColor = '#d4edda';
+          if(StressLevel === "High") { colorClass = "high"; bgColor = '#f8d7da'; }
+          else if(StressLevel === "Medium") { colorClass = "medium"; bgColor = '#fff3cd'; }
+
+          overlay.innerHTML = `Emotion: ${Emotion} | Stress: <span class="${colorClass}">${StressLevel}</span> | Score: ${StressScore} | ${new Date().toLocaleTimeString()}`;
+          document.body.style.backgroundColor = bgColor;
+
+          drawGauge(StressScore);
+
+          const li = document.createElement("li");
+          li.innerHTML = `${new Date().toLocaleTimeString()} - Emotion: ${Emotion}, Stress: ${StressLevel}, Score: ${StressScore}`;
+          historyList.prepend(li);
+          if(historyList.children.length > 10) historyList.removeChild(historyList.lastChild);
+
+          chartData.labels.push(new Date().toLocaleTimeString());
+          chartData.datasets[0].data.push(StressScore);
+          if(chartData.labels.length > 10) { chartData.labels.shift(); chartData.datasets[0].data.shift(); }
+          stressChart.update();
+        }
+
+      } catch(err) {
+        overlay.textContent = "Error: " + err;
+      } finally {
+        isSending = false;
+      }
+    }
+
+    // Send frame every 0.5 seconds
+    setInterval(sendFrame, 500);
+  </script>
+</body>
+</html>
